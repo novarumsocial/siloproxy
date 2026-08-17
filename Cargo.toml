@@ -1,0 +1,12 @@
+[package]
+name = "siloproxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
+hyper-rustls = { version = "0.27", features = ["http1", "http2", "native-tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "client-legacy", "http1", "http2"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
