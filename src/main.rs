@@ -38,12 +38,26 @@ fn keep_end_to_end(headers: &mut hyper::HeaderMap) {
     headers.extend(keep);
 }
 
+fn unauthorized() -> Response<BoxBody> {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())
+        .unwrap()
+}
+
 async fn proxy(
     req: Request<Incoming>,
     client: ProxyClient,
     upstream: Arc<str>,
+    bucket: Option<Arc<str>>,
 ) -> Result<Response<BoxBody>, hyper_util::client::legacy::Error> {
     let path = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    if let Some(bucket) = &bucket {
+        if path != format!("/{bucket}") && !path.starts_with(&format!("/{bucket}/")) {
+            eprintln!("blocked: path outside bucket {bucket}: {path}");
+            return Ok(unauthorized());
+        }
+    }
     let target: Uri = match format!("{upstream}{path}").parse() {
         Ok(u) => u,
         Err(_) => return Ok(bad_gateway()),
@@ -74,6 +88,7 @@ async fn main() {
         .trim_end_matches('/')
         .to_string()
         .into();
+    let bucket: Option<Arc<str>> = std::env::var("BUCKET").ok().map(Arc::from);
 
     let mut http = HttpConnector::new();
     http.enforce_http(false); // scheme is the HttpsConnector's job, not the inner connector's
@@ -95,8 +110,10 @@ async fn main() {
         let _ = stream.set_nodelay(true);
         let client = client.clone();
         let upstream = upstream.clone();
+        let bucket = bucket.clone();
         tokio::spawn(async move {
-            let svc = service_fn(move |req| proxy(req, client.clone(), upstream.clone()));
+            let svc =
+                service_fn(move |req| proxy(req, client.clone(), upstream.clone(), bucket.clone()));
             let mut builder = Builder::new(TokioExecutor::new());
             builder
                 .http1()

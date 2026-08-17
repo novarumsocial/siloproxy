@@ -17,6 +17,7 @@ certificates.
 |-----------|--------------------|--------------------------------------|
 | `BIND`    | `0.0.0.0:8080`     | Address to listen on                 |
 | `UPSTREAM`| `https://onsilo.dev`| Target to proxy to (no trailing `/`) |
+| `BUCKET`  | *(all buckets)*    | If set, only this bucket (first path segment) is proxied, others get `403` |
 
 ## Run with Docker
 
