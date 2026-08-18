@@ -4,7 +4,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::header::{HeaderName, HeaderValue, CONNECTION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE};
+use hyper::header::{HeaderName, HeaderValue, CONNECTION, HOST, TE, TRAILER, TRANSFER_ENCODING, UPGRADE};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_rustls::HttpsConnectorBuilder;
@@ -17,8 +17,8 @@ use tokio::net::TcpListener;
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 type ProxyClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Incoming>;
 
-// hop-by-hop only. Host is forwarded untouched: SigV4 signs the client's host
-// header and path, so rewriting either breaks authentication.
+// hop-by-hop only. Host is rewritten to the upstream host: SigV4 signs the
+// Host header, so it must match what the service validates against.
 const HOP_BY_HOP: [HeaderName; 5] = [CONNECTION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE];
 
 fn bad_gateway() -> Response<BoxBody> {
@@ -49,6 +49,7 @@ async fn proxy(
     req: Request<Incoming>,
     client: ProxyClient,
     upstream: Arc<str>,
+    upstream_host: Arc<str>,
     bucket: Option<Arc<str>>,
 ) -> Result<Response<BoxBody>, hyper_util::client::legacy::Error> {
     let path = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
@@ -64,8 +65,13 @@ async fn proxy(
     };
 
     let (mut parts, body) = req.into_parts();
-    parts.uri = target;
+    parts.uri = target.clone();
     keep_end_to_end(&mut parts.headers);
+    // SigV4 signs the Host header. Rotate it to the upstream host so the
+    // signed value matches the host the service validates against.
+    parts
+        .headers
+        .insert(HOST, HeaderValue::from_str(&upstream_host).unwrap());
     let req = Request::from_parts(parts, body);
 
     let resp = match client.request(req).await {
@@ -87,6 +93,11 @@ async fn main() {
         .unwrap_or_else(|_| "https://onsilo.dev".to_string())
         .trim_end_matches('/')
         .to_string()
+        .into();
+    let upstream_host: Arc<str> = upstream
+        .rsplit("://")
+        .next()
+        .unwrap_or(&upstream)
         .into();
     let bucket: Option<Arc<str>> = std::env::var("BUCKET").ok().map(Arc::from);
 
@@ -110,10 +121,12 @@ async fn main() {
         let _ = stream.set_nodelay(true);
         let client = client.clone();
         let upstream = upstream.clone();
+        let upstream_host = upstream_host.clone();
         let bucket = bucket.clone();
         tokio::spawn(async move {
-            let svc =
-                service_fn(move |req| proxy(req, client.clone(), upstream.clone(), bucket.clone()));
+            let svc = service_fn(move |req| {
+                proxy(req, client.clone(), upstream.clone(), upstream_host.clone(), bucket.clone())
+            });
             let mut builder = Builder::new(TokioExecutor::new());
             builder
                 .http1()

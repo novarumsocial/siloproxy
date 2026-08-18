@@ -1,53 +1,44 @@
 # siloproxy
 
-Minimal reverse proxy that forwards requests to an upstream HTTPS service,
-keeping the client's `Host` header and path intact so SigV4-signed requests
-keep working.
+Reverse proxy that rewrites `Host` headers for SigV4 compatibility. Points at an upstream HTTPS service (like `onsilo.dev`), strips hop-by-hop headers, and streams responses back.
 
-## How it works
+## Why
 
-For each request it builds `{UPSTREAM}{path}`, strips hop-by-hop headers
-(`Connection`, `Transfer-Encoding`, `TE`, `Trailer`, `Upgrade`), forwards the
-rest unchanged, and streams the response back. TLS is handled with native root
-certificates.
+SigV4 signs the `Host` header. If your client signs for `localhost:8080` but the service expects `onsilo.dev`, you get `SignatureDoesNotMatch`. This proxy rotates the `Host` to match the upstream so signatures stay valid.
 
-## Configuration
+Point your S3 client at the proxy, but sign for the upstream host (`onsilo.dev`).
 
-| Env var   | Default            | Description                          |
-|-----------|--------------------|--------------------------------------|
-| `BIND`    | `0.0.0.0:8080`     | Address to listen on                 |
-| `UPSTREAM`| `https://onsilo.dev`| Target to proxy to (no trailing `/`) |
-| `BUCKET`  | *(all buckets)*    | If set, only this bucket (first path segment) is proxied, others get `403` |
+## Config
 
-## Run with Docker
+| Env var     | Default             | Purpose                                          |
+|-------------|---------------------|--------------------------------------------------|
+| `BIND`      | `0.0.0.0:8080`      | Listen address                                   |
+| `UPSTREAM`  | `https://onsilo.dev` | Target (no trailing `/`)                         |
+| `BUCKET`    | *all*               | Restrict to one bucket (first path segment). Else `403`. |
 
-```sh
-docker build -t siloproxy .
-docker run -p 8080:8080 \
-  -e BIND=0.0.0.0:8080 \
-  -e UPSTREAM=https://onsilo.dev \
-  siloproxy
-```
-
-## Docker Compose
-
-```yaml
-services:
-  siloproxy:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      BIND: 0.0.0.0:8080
-      UPSTREAM: https://onsilo.dev
-    restart: unless-stopped
-```
-
-Then `curl http://localhost:8080/some/path` proxies to
-`https://onsilo.dev/some/path`.
-
-## Run from source
+## Run
 
 ```sh
 cargo run --release
 ```
+
+Docker:
+
+```sh
+docker run -p 8080:8080 -e UPSTREAM=https://onsilo.dev ghcr.io/novarumsocial/siloproxy
+```
+
+Compose:
+
+```yaml
+services:
+  siloproxy:
+    image: ghcr.io/novarumsocial/siloproxy
+    ports:
+      - "8080:8080"
+    environment:
+      UPSTREAM: https://onsilo.dev
+    restart: unless-stopped
+```
+
+Then `curl http://localhost:8080/some/path` proxies to `https://onsilo.dev/some/path`.
