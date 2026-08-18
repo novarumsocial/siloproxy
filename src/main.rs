@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -20,6 +20,16 @@ type ProxyClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Incoming>
 // hop-by-hop only. Host is rewritten to the upstream host: SigV4 signs the
 // Host header, so it must match what the service validates against.
 const HOP_BY_HOP: [HeaderName; 5] = [CONNECTION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE];
+
+fn debug_on() -> bool {
+    std::env::var("DEBUG").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+}
+
+fn debug(what: &str, started: Instant) {
+    if debug_on() {
+        eprintln!("[debug] {:>10.3}ms  {what}", started.elapsed().as_secs_f64() * 1000.0);
+    }
+}
 
 fn bad_gateway() -> Response<BoxBody> {
     Response::builder()
@@ -52,7 +62,11 @@ async fn proxy(
     upstream_host: Arc<str>,
     bucket: Option<Arc<str>>,
 ) -> Result<Response<BoxBody>, hyper_util::client::legacy::Error> {
-    let path = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let started = Instant::now();
+    let path = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
+    if debug_on() {
+        eprintln!("[debug] request {} {path}", req.method());
+    }
     if let Some(bucket) = &bucket {
         if path != format!("/{bucket}") && !path.starts_with(&format!("/{bucket}/")) {
             eprintln!("blocked: path outside bucket {bucket}: {path}");
@@ -74,6 +88,7 @@ async fn proxy(
         .insert(HOST, HeaderValue::from_str(&upstream_host).unwrap());
     let req = Request::from_parts(parts, body);
 
+    let up = Instant::now();
     let resp = match client.request(req).await {
         Ok(r) => r,
         Err(e) => {
@@ -81,8 +96,10 @@ async fn proxy(
             return Ok(bad_gateway());
         }
     };
+    debug(&format!("upstream {target}"), up);
     let (mut parts, body) = resp.into_parts();
     keep_end_to_end(&mut parts.headers);
+    debug(&format!("total {path}"), started);
     Ok(Response::from_parts(parts, body.boxed()))
 }
 
@@ -124,6 +141,7 @@ async fn main() {
         let upstream_host = upstream_host.clone();
         let bucket = bucket.clone();
         tokio::spawn(async move {
+            let conn_started = Instant::now();
             let svc = service_fn(move |req| {
                 proxy(req, client.clone(), upstream.clone(), upstream_host.clone(), bucket.clone())
             });
@@ -136,6 +154,7 @@ async fn main() {
             {
                 eprintln!("conn error: {e}");
             }
+            debug("conn closed", conn_started);
         });
     }
 }
