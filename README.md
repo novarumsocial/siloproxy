@@ -15,17 +15,22 @@ Point your S3 client at the proxy, but sign for the upstream host (`onsilo.dev`)
 | `BIND`      | `0.0.0.0:8080`      | Listen address                                   |
 | `UPSTREAM`  | `https://onsilo.dev` | Target (no trailing `/`)                         |
 | `BUCKET`    | *all*               | Restrict to one bucket (first path segment). Else `403`. |
+| `DEBUG`     | off                 | Log requests to stderr                           |
 
-## Run
+## Build
 
 ```sh
-cargo run --release
+make            # or: cc -O2 -pipe -o siloproxy src/main.c $(pkg-config --cflags --libs openssl) -pthread
+./siloproxy
 ```
+
+Single C file, one OpenSSL dependency, ~0.5s compile. Thread per connection, 64KB streaming buffers, keepalive on both sides, chunked pass-through (no re-chunking), TLS upstream with SNI + cert verification.
 
 Docker:
 
 ```sh
-docker run -p 8080:8080 -e UPSTREAM=https://onsilo.dev ghcr.io/novarumsocial/siloproxy
+docker build -t siloproxy .
+docker run -p 8080:8080 -e UPSTREAM=https://onsilo.dev siloproxy
 ```
 
 Compose:
