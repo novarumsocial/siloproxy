@@ -19,6 +19,7 @@
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define BUFSZ             (64 * 1024)
@@ -45,6 +46,12 @@ typedef struct {
     char out[BUFSZ];
     size_t out_len;
 } Conn;
+
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
 
 static int wait_fd(int fd, short ev) {
     struct pollfd p = { .fd = fd, .events = ev };
@@ -579,6 +586,8 @@ static int is_head(const char *m, size_t ml) { return ml == 4 && !memcmp(m, "HEA
 static void *handle_conn(void *arg) {
     Conn c = *(Conn *)arg;
     free(arg);
+    double t_start = 0;
+    char tlog[256] = "";
     for (;;) {
         if (read_client_headers(&c)) goto done;
         char *method, *target;
@@ -589,8 +598,8 @@ static void *handle_conn(void *arg) {
             goto done;
         }
         if (g_debug) fprintf(stderr, "[debug] %.*s %.*s\n", (int)mlen, method, (int)tlen, target);
+        t_start = now_ms();
         int head_req = is_head(method, mlen);
-        char tlog[256];
         size_t tcopy = tlen < sizeof(tlog) - 1 ? tlen : sizeof(tlog) - 1;
         memcpy(tlog, target, tcopy);
         tlog[tcopy] = 0;
@@ -687,11 +696,12 @@ static void *handle_conn(void *arg) {
                 if (pump_resp_body(&c, 0, rcl, &up_eof)) goto done;
             }
         }
-        if (g_debug) fprintf(stderr, "[debug] %d %s\n", status, tlog);
+        if (g_debug) fprintf(stderr, "[debug] %10.1fms  upstream %s\n", now_ms() - t_start, tlog);
         if (!keep_up || up_eof) close_upstream(&c);
         if (early || up_eof || !client_keep) goto done;
     }
-done:
+done:;
+    if (g_debug && t_start > 0) fprintf(stderr, "[debug] %10.1fms  total %s\n", now_ms() - t_start, tlog);
     close_upstream(&c);
     close(c.cfd);
     free(c.upstream);
