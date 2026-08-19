@@ -278,6 +278,24 @@ static int header_has(const char *buf, size_t blen, const char *name, const char
     return t.found;
 }
 
+struct val_ctx { const char *name; char *out; size_t cap; size_t len; };
+static void val_hdr(const char *ln, size_t ll, void *p) {
+    struct val_ctx *v = p;
+    if (v->len || !hdr_is(ln, ll, v->name)) return;
+    const char *val = memchr(ln, ':', ll) + 1;
+    while (*val == ' ' || *val == '\t') val++;
+    size_t vl = (size_t)((ln + ll) - val);
+    if (vl >= v->cap) vl = v->cap - 1;
+    memcpy(v->out, val, vl);
+    v->out[vl] = 0;
+    v->len = vl;
+}
+static void header_value(const char *buf, size_t blen, const char *name, char *out, size_t cap) {
+    struct val_ctx v = { name, out, cap, 0 };
+    each_header(buf, blen, val_hdr, &v);
+    if (!v.len) out[0] = 0;
+}
+
 static int read_client_headers(Conn *c) {
     for (;;) {
         if (c->cbuf_len > BUFSZ) return -1;
@@ -609,6 +627,30 @@ static void *handle_conn(void *arg) {
             goto done;
         }
         int client_keep = ver11 && !header_has(c.cbuf, hdr_end + 2, "connection", "close");
+
+        // CORS preflight: some S3 backends (silo) 403 every OPTIONS request, so
+        // answer preflights here instead of forwarding them upstream.
+        if (mlen == 7 && !memcmp(method, "OPTIONS", 7) &&
+            header_has(c.cbuf, hdr_end + 2, "origin", "")) {
+            char origin[512];
+            header_value(c.cbuf, hdr_end + 2, "origin", origin, sizeof origin);
+            char resp[1024];
+            int n = snprintf(resp, sizeof resp,
+                             "HTTP/1.1 200 OK\r\n"
+                             "Access-Control-Allow-Origin: %s\r\n"
+                             "Access-Control-Allow-Methods: GET, HEAD, PUT, POST, DELETE, OPTIONS\r\n"
+                             "Access-Control-Allow-Headers: *\r\n"
+                             "Access-Control-Expose-Headers: ETag\r\n"
+                             "Access-Control-Max-Age: 86400\r\n"
+                             "Content-Length: 0\r\n"
+                             "Connection: keep-alive\r\n"
+                             "\r\n",
+                             origin[0] ? origin : "*");
+            if (n <= 0 || (size_t)n >= sizeof resp || cl_write_all(&c, resp, (size_t)n)) goto done;
+            if (!client_keep) goto done;
+            continue;
+        }
+
         int chunked = header_has(c.cbuf, hdr_end + 2, "transfer-encoding", "chunked");
         uint64_t cl;
         if (header_uint(c.cbuf, hdr_end + 2, "content-length", &cl) < 0) {
